@@ -129,16 +129,18 @@ def process_tile(args):
 
 
 def tile_satellite(root_dir):
+    areas_to_process = [i for i in range(1, 12) if i in TRAIN_LIST or i in TEST_LIST]
+    print(f"[tile_satellite] Processing {len(areas_to_process)} areas: {areas_to_process}")
     
-    for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
-            continue
+    for idx, i in enumerate(areas_to_process):
+        print(f"[tile_satellite] Area {i:02} ({idx+1}/{len(areas_to_process)}) - Loading image...", flush=True)
         file_dir = os.path.join(root_dir, f'{i:02}')
         tile_dir = os.path.join(file_dir, 'tile')
         os.makedirs(tile_dir, exist_ok=True)
 
         image_path = os.path.join(file_dir, f'satellite{i:02}.tif')
         image = Image.open(image_path)
+        print(f"[tile_satellite] Area {i:02} - Image size: {image.width}x{image.height}", flush=True)
 
         # Tile Size
         tile_size = TILE_SIZE
@@ -146,6 +148,7 @@ def tile_satellite(root_dir):
         # Calculate Max Zoom Level
         max_dim = max(image.width, image.height)
         max_zoom = math.ceil(math.log(max_dim / tile_size, 2))
+        print(f"[tile_satellite] Area {i:02} - Max zoom: {max_zoom}, creating {max_zoom+1} zoom levels", flush=True)
 
 
         # Tiling
@@ -166,6 +169,7 @@ def tile_satellite(root_dir):
             for x in range(0, scaled_width, tile_size):
                 for y in range(0, scaled_height, tile_size):
                     tasks.append((scaled_image, f'{i:02}', zoom_dir, zoom, x, y, tile_size))
+            print(f"[tile_satellite] Area {i:02} - Zoom {zoom}/{max_zoom}: {len(tasks)} tiles ({scaled_width}x{scaled_height})", flush=True)
             with Pool(cpu_count()) as pool:
                 pool.map(process_tile, tasks)
             
@@ -178,16 +182,18 @@ def tile_satellite(root_dir):
             #         transparent_tile.paste(tile, (0, 0))
             #         transparent_tile.save(f'{i:02}_{zoom_dir}_{x // tile_size}_{y // tile_size}.png'))
 
-    print('Tiling Satellite Done')
+    print('[tile_satellite] Tiling Satellite Done')
 
 
 def copy_satellite(root_dir):
     dst_dir = os.path.join(root_dir, 'satellite')
     os.makedirs(dst_dir, exist_ok=True)
+    
+    areas_to_process = [i for i in range(1, 12) if i in TRAIN_LIST or i in TEST_LIST]
+    print(f"[copy_satellite] Copying satellite tiles for {len(areas_to_process)} areas...", flush=True)
+    total_copied = 0
 
-    for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
-                continue
+    for idx, i in enumerate(areas_to_process):
         file_dir = os.path.join(root_dir, f'{i:02}')
         tile_dir = os.path.join(file_dir, 'tile')
 
@@ -197,31 +203,42 @@ def copy_satellite(root_dir):
         zoom_max = zoom_list[-1]
         ### Only keep the third to second lowest zoom level
         zoom_list = zoom_list[-3:-1]
-
+        
+        area_copied = 0
         for zoom in zoom_list:
             tile_zoom_dir = os.path.join(tile_dir, str(zoom))
             for file_name in os.listdir(tile_zoom_dir):
                 source_path = os.path.join(tile_zoom_dir, file_name)
                 if os.path.isfile(source_path):
                     shutil.copy(source_path, dst_dir)
+                    area_copied += 1
+        
+        total_copied += area_copied
+        print(f"[copy_satellite] Area {i:02} ({idx+1}/{len(areas_to_process)}): {area_copied} tiles copied", flush=True)
 
-    print('Copy Satellite Done')
+    print(f'[copy_satellite] Copy Satellite Done - Total: {total_copied} tiles')
 
      
 def copy_drone(root_dir):
     dst_dir = os.path.join(root_dir, 'drone', 'images')
     os.makedirs(dst_dir, exist_ok=True)
+    
+    areas_to_process = [i for i in range(1, 12) if i in TRAIN_LIST or i in TEST_LIST]
+    print(f"[copy_drone] Copying drone images for {len(areas_to_process)} areas...", flush=True)
+    total_copied = 0
 
-    for i in range(1, 12):
-        if i not in TRAIN_LIST or i not in TEST_LIST:
-                continue
+    for idx, i in enumerate(areas_to_process):
         file_dir = os.path.join(root_dir, f'{i:02}', 'drone')
+        area_copied = 0
         for file_name in os.listdir(file_dir):
             source_path = os.path.join(file_dir, file_name)
             if os.path.isfile(source_path):
                 shutil.copy(source_path, dst_dir)
+                area_copied += 1
+        total_copied += area_copied
+        print(f"[copy_drone] Area {i:02} ({idx+1}/{len(areas_to_process)}): {area_copied} images copied", flush=True)
 
-    print('Copy Drone Done')
+    print(f'[copy_drone] Copy Drone Done - Total: {total_copied} images')
 
 
 def copy_png_files(src_path, dst_path):
@@ -526,6 +543,10 @@ def save_pairs_meta_data(pairs_drone2sate_list, pkl_save_path, pair_save_dir):
 
 
 def process_visloc_data(root, save_root, split_type):
+    print(f"\n[process_visloc_data] Starting processing with split_type='{split_type}'", flush=True)
+    print(f"[process_visloc_data] TRAIN_LIST: {TRAIN_LIST}", flush=True)
+    print(f"[process_visloc_data] TEST_LIST: {TEST_LIST}", flush=True)
+    
     processed_data_train = []
     processed_data_test = []
 
@@ -553,13 +574,15 @@ def process_visloc_data(root, save_root, split_type):
         if i not in TRAIN_LIST and i not in TEST_LIST:
             continue
         str_i = f'{i:02}'
+        print(f"[process_visloc_data] Loading area {str_i} metadata...", flush=True)
         file_dir = os.path.join(root, str_i)
 
         drone_meta_file = os.path.join(file_dir, f'{str_i}.csv')
 
         sate_img = cv2.imread(os.path.join(file_dir, f'satellite{str_i}.tif'))
         sate_pix_h, sate_pix_w, _ = sate_img.shape
-
+        
+        area_count = 0
         with open(drone_meta_file, newline='') as csvfile:
             csvreader = csv.reader(csvfile, delimiter=',')
             # 读取文件的头部
@@ -591,10 +614,17 @@ def process_visloc_data(root, save_root, split_type):
                         test_drone_meta_data_list.append(tmp_meta_data)
                 else:
                     drone_meta_data_list.append(tmp_meta_data)
+                area_count += 1
+        
+        print(f"[process_visloc_data] Area {str_i}: {area_count} drone images", flush=True)
+    
+    print(f"[process_visloc_data] Total train samples: {len(train_drone_meta_data_list)}", flush=True)
+    print(f"[process_visloc_data] Total test samples: {len(test_drone_meta_data_list)}", flush=True)
 
     if split_type == 'same-area':
         processed_data = []
         random.shuffle(drone_meta_data_list)
+        print(f"[process_visloc_data] Processing {len(drone_meta_data_list)} same-area samples...", flush=True)
         with concurrent.futures.ProcessPoolExecutor() as executor:
             for result in tqdm(executor.map(process_per_image, drone_meta_data_list), total=len(drone_meta_data_list)):
                 # 将每个返回值添加到结果列表中
@@ -611,10 +641,12 @@ def process_visloc_data(root, save_root, split_type):
     else:
         processed_data_train = []
         processed_data_test = []
+        print(f"\n[process_visloc_data] Processing TRAIN set ({len(train_drone_meta_data_list)} samples)...", flush=True)
         with concurrent.futures.ProcessPoolExecutor() as executor:
             for result in tqdm(executor.map(process_per_image, train_drone_meta_data_list), total=len(train_drone_meta_data_list)):
                 # 将每个返回值添加到结果列表中
                     processed_data_train.append(result)
+        print(f"[process_visloc_data] Processing TEST set ({len(test_drone_meta_data_list)} samples)...", flush=True)
         with concurrent.futures.ProcessPoolExecutor() as executor:
             for result in tqdm(executor.map(process_per_image, test_drone_meta_data_list), total=len(test_drone_meta_data_list)):
                 # 将每个返回值添加到结果列表中
@@ -629,8 +661,10 @@ def process_visloc_data(root, save_root, split_type):
                 test_processed_data_wonone.append(result)
         processed_data_train = train_processed_data_wonone
         processed_data_test = test_processed_data_wonone
+        print(f"[process_visloc_data] Valid train pairs: {len(processed_data_train)}", flush=True)
+        print(f"[process_visloc_data] Valid test pairs: {len(processed_data_test)}", flush=True)
 
-
+    print(f"\n[process_visloc_data] Saving pickle files...", flush=True)
     train_pkl_save_path = os.path.join(save_root, 'train_pair_meta.pkl')
     train_data_save_dir = os.path.join(save_root, 'train')
     save_pairs_meta_data(processed_data_train, train_pkl_save_path, train_data_save_dir)
@@ -639,27 +673,31 @@ def process_visloc_data(root, save_root, split_type):
     test_data_save_dir = os.path.join(save_root, 'test')
     save_pairs_meta_data(processed_data_test, test_pkl_save_path, test_data_save_dir)
 
+    print(f"[process_visloc_data] Writing JSON files...", flush=True)
     write_json(save_root, root, split_type)
+    print(f"[process_visloc_data] DONE!", flush=True)
 
 def write_json(pickle_root, root, split_type):
     for type in ['train', 'test']:
+        print(f"[write_json] Processing {type}...", flush=True)
         data_drone2sate_json = []
         with open(os.path.join(pickle_root, f'{type}_pair_meta.pkl'), 'rb') as f:
             data_pickle = pickle.load(f)
         for pair_drone2sate in data_pickle['pairs_drone2sate_list']:
             img_name = pair_drone2sate['drone_img']
             
+            # GTA-UAV compatible format: use _x_y keys instead of _lat_lon
             data_drone2sate_json.append({
                 "drone_img_dir": "drone/images",
                 "drone_img_name": pair_drone2sate['drone_img'],
-                "drone_loc_lat_lon": (pair_drone2sate['lat'], pair_drone2sate['lon']),
+                "drone_loc_x_y": [pair_drone2sate['lat'], pair_drone2sate['lon']],  # GTA-UAV key
                 "sate_img_dir": "satellite",
                 "pair_pos_sate_img_list": pair_drone2sate['pair_pos_sate_img_list'],
                 "pair_pos_sate_weight_list": pair_drone2sate['pair_pos_sate_weight_list'],
-                "pair_pos_sate_loc_lat_lon_list": pair_drone2sate['pair_pos_sate_loc_lat_lon_list'],
+                "pair_pos_sate_loc_x_y_list": pair_drone2sate['pair_pos_sate_loc_lat_lon_list'],  # GTA-UAV key
                 "pair_pos_semipos_sate_img_list": pair_drone2sate['pair_pos_semipos_sate_img_list'],
                 "pair_pos_semipos_sate_weight_list": pair_drone2sate['pair_pos_semipos_sate_weight_list'],
-                "pair_pos_semipos_sate_loc_lat_lon_list": pair_drone2sate['pair_pos_semipos_sate_loc_lat_lon_list'],
+                "pair_pos_semipos_sate_loc_x_y_list": pair_drone2sate['pair_pos_semipos_sate_loc_lat_lon_list'],  # GTA-UAV key
                 "drone_metadata": {
                     "height": None,
                     "drone_roll": None,
@@ -694,21 +732,21 @@ if __name__ == '__main__':
 
     ############################################################
     ## UAV-VisLoc dataset root, please change it
-    root = '/home/xmuairmud/data/UAV_VisLoc_dataset'
+    root = '/home/aniel/skyline_drone/datasets/UAV_VisLoc_dataset'
     ## Saving directory, please change it
-    save_root = '/home/xmuairmud/data/UAV_VisLoc_dataset/same_area'
+    save_root = '/home/aniel/skyline_drone/datasets/UAV_VisLoc_dataset/cross_area_processed'
     ## Mode (cross-area / same-area)
-    split_type = 'same-area'
+    split_type = 'cross-area'
 
     ##############################################################
-    ## For same-area, we use 03, 04 for both train and test
+    ## For same-area, we use all areas for both train and test
     if split_type == 'same-area':
-        TRAIN_LIST = [3, 4]
-        TEST_LIST = [3, 4]
-    ## For cross-area, we use 03 for train; and 04 for test
+        TRAIN_LIST = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11]  # All available areas (no area 9 in SATE_LATLON)
+        TEST_LIST = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11]
+    ## For cross-area, we use odd areas for train; even areas for test
     elif split_type == 'cross-area':
-        TRAIN_LIST = [3]
-        TEST_LIST = [4]
+        TRAIN_LIST = [1, 3, 5, 7, 11]  # Odd areas
+        TEST_LIST = [2, 4, 6, 8, 10]   # Even areas
     ## Other settings like TRAIN_LIST=[1,2], TEST_LIST=[3,4] are also available
 
     ################################################################

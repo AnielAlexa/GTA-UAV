@@ -331,7 +331,8 @@ class VisLocDatasetEval(Dataset):
             for pair_drone2sate in pairs_meta_data:
                 drone_img_name = pair_drone2sate['drone_img_name']
                 drone_img_dir = pair_drone2sate['drone_img_dir']
-                drone_loc_xy = pair_drone2sate['drone_loc_lat_lon']
+                # Support both GTA-UAV format (drone_loc_x_y) and legacy format (drone_loc_lat_lon)
+                drone_loc_xy = pair_drone2sate.get('drone_loc_x_y', pair_drone2sate.get('drone_loc_lat_lon'))
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:

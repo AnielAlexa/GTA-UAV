@@ -16,6 +16,7 @@ import concurrent.futures
 import itertools
 import pickle
 import json
+from game4loc.transforms import RandomCenterCropZoom
 
 
 SATE_LENGTH = 24576
@@ -452,7 +453,9 @@ class GTADatasetEval(Dataset):
 def get_transforms(img_size,
                    mean=[0.485, 0.456, 0.406],
                    std=[0.229, 0.224, 0.225],
-                   sat_rot=False):
+                   sat_rot=False,
+                   altitude_aug_prob=0.5,
+                   altitude_scale_range=(0.25, 0.55)):
     
 
     val_transforms = A.Compose([A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
@@ -465,7 +468,9 @@ def get_transforms(img_size,
     else:
         p_rot = 0.0
                                 
-    train_sat_transforms = A.Compose([A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
+    train_sat_transforms = A.Compose([
+                                    RandomCenterCropZoom(scale_limit=altitude_scale_range, p=altitude_aug_prob),
+                                    A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
                                     A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
                                     A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5),
                                     A.OneOf([
@@ -487,7 +492,8 @@ def get_transforms(img_size,
                                     ToTensorV2(),
                                     ])
 
-    train_drone_transforms = A.Compose([A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
+    train_drone_transforms = A.Compose([RandomCenterCropZoom(scale_limit=altitude_scale_range, p=altitude_aug_prob),
+                                        A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
                                         A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
                                         A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5),
                                         A.OneOf([
