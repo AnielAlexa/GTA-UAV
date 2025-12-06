@@ -29,8 +29,8 @@ Image.MAX_IMAGE_PIXELS = None
 FOV_V = 52
 FOV_H = 36
 
-TRAIN_LIST = [1, 3]
-TEST_LIST = [2, 4]
+TRAIN_LIST = [1, 3, 5, 7, 8, 11]
+TEST_LIST = [2, 4, 6, 10]
 
 # TRAIN_LIST = [1, 2, 3, 4, 5, 8, 11]
 # TEST_LIST = [1, 2, 3, 4, 5, 8, 11]
@@ -148,11 +148,14 @@ def tile_satellite(root_dir):
         # Calculate Max Zoom Level
         max_dim = max(image.width, image.height)
         max_zoom = math.ceil(math.log(max_dim / tile_size, 2))
-        print(f"[tile_satellite] Area {i:02} - Max zoom: {max_zoom}, creating {max_zoom+1} zoom levels", flush=True)
+        
+        # Only create zoom levels 6, 7, 8 (or max_zoom-2, max_zoom-1, max_zoom if smaller)
+        min_zoom = max(0, max_zoom - 2)
+        print(f"[tile_satellite] Area {i:02} - Max zoom: {max_zoom}, creating zoom {min_zoom}-{max_zoom} only", flush=True)
 
 
-        # Tiling
-        for zoom in range(max_zoom + 1):
+        # Tiling - only top 3 zoom levels
+        for zoom in range(min_zoom, max_zoom + 1):
             zoom_dir = os.path.join(tile_dir, str(zoom))
             if not os.path.exists(zoom_dir):
                 os.makedirs(zoom_dir)
@@ -201,8 +204,8 @@ def copy_satellite(root_dir):
         zoom_list = [int(x) for x in zoom_list]
         zoom_list.sort()
         zoom_max = zoom_list[-1]
-        ### Only keep the third to second lowest zoom level
-        zoom_list = zoom_list[-3:-1]
+        ### Keep the top 3 zoom levels (6, 7, 8 for max_zoom=8)
+        zoom_list = zoom_list[-3:]
         
         area_copied = 0
         for zoom in zoom_list:
@@ -409,8 +412,8 @@ def process_per_image(drone_meta_data):
     zoom_list = [int(x) for x in zoom_list]
     zoom_list.sort()
     zoom_max = zoom_list[-1]
-    ### Only keep the third to second lowest zoom level
-    zoom_list = zoom_list[-3:-1]
+    ### Use top 3 zoom levels (6, 7, 8) for matching
+    zoom_list = zoom_list[-3:]
 
     cur_img_x, cur_img_y = geo_to_image_coords(lat, lon, sate_lt_lat, sate_lt_lon, sate_rb_lat, sate_rb_lon, sate_pix_h, sate_pix_w)
     p_img_xy = [

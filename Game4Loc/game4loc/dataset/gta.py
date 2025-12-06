@@ -56,7 +56,12 @@ class GTADatasetTrain(Dataset):
                  group_len=2):
         super().__init__()
         
-        with open(os.path.join(data_root, pairs_meta_file), 'r', encoding='utf-8') as f:
+        # Support absolute path for pairs_meta_file
+        if os.path.isabs(pairs_meta_file):
+            json_path = pairs_meta_file
+        else:
+            json_path = os.path.join(data_root, pairs_meta_file)
+        with open(json_path, 'r', encoding='utf-8') as f:
             pairs_meta_data = json.load(f)
         self.data_root = data_root
         self.group_len = group_len
@@ -74,10 +79,12 @@ class GTADatasetTrain(Dataset):
             pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
             pair_sate_weight_list = pair_drone2sate[f'pair_{mode}_sate_weight_list']
             
-            drone_img_file = os.path.join(data_root, drone_img_dir, drone_img_name)
+            # Support per-entry data_root for combined datasets
+            entry_root = pair_drone2sate.get('data_root', data_root)
+            drone_img_file = os.path.join(entry_root, drone_img_dir, drone_img_name)
 
             for pair_sate_img, pair_sate_weight in zip(pair_sate_img_list, pair_sate_weight_list):
-                sate_img_file = os.path.join(data_root, sate_img_dir, pair_sate_img)
+                sate_img_file = os.path.join(entry_root, sate_img_dir, pair_sate_img)
                 self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight))
 
             # Build Graph with All Edges (drone, sate)
@@ -366,7 +373,12 @@ class GTADatasetEval(Dataset):
                  ):
         super().__init__()
         
-        with open(os.path.join(data_root, pairs_meta_file), 'r', encoding='utf-8') as f:
+        # Support absolute path for pairs_meta_file
+        if os.path.isabs(pairs_meta_file):
+            json_path = pairs_meta_file
+        else:
+            json_path = os.path.join(data_root, pairs_meta_file)
+        with open(json_path, 'r', encoding='utf-8') as f:
             pairs_meta_data = json.load(f)
         self.data_root = data_root
         sate_img_dir = os.path.join(data_root, sate_img_dir)    
@@ -386,6 +398,8 @@ class GTADatasetEval(Dataset):
                 drone_img_name = pair_drone2sate['drone_img_name']
                 drone_img_dir = pair_drone2sate['drone_img_dir']
                 drone_loc_x_y = pair_drone2sate['drone_loc_x_y']
+                # Support per-entry data_root for combined datasets
+                entry_root = pair_drone2sate.get('data_root', data_root)
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:
@@ -393,7 +407,7 @@ class GTADatasetEval(Dataset):
                     self.pairs_sate2drone_dict.setdefault(pair_sate_img, []).append(drone_img_name)
                     self.pairs_match_set.add((drone_img_name, pair_sate_img))
                 if len(pair_sate_img_list) != 0:
-                    self.images_path.append(os.path.join(data_root, drone_img_dir, drone_img_name))
+                    self.images_path.append(os.path.join(entry_root, drone_img_dir, drone_img_name))
                     self.images_name.append(drone_img_name)
                     self.images_center_loc_xy.append((drone_loc_x_y[0], drone_loc_x_y[1]))
 
