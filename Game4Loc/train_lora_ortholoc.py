@@ -37,6 +37,7 @@ import math
 import shutil
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import cv2
 from torch.cuda.amp import GradScaler, autocast
@@ -564,6 +565,115 @@ def validate_ortholoc(model, val_loader_query, val_loader_gallery, device='cuda'
     }
 
 
+def validate_ortholoc_backbone_only(backbone, val_loader_query, val_loader_gallery, device='cuda'):
+    """
+    Validate using ONLY backbone features (bypass LoRA and MLP).
+    This tests pure DINOv3 without any task-specific training.
+
+    Args:
+        backbone: Raw backbone model (without LoRA or MLP)
+        val_loader_query: DataLoader for query images (drone)
+        val_loader_gallery: DataLoader for gallery images (satellite)
+        device: Device to run on
+
+    Returns:
+        dict: {'r1': float, 'r5': float, 'r10': float}
+    """
+    backbone.eval()
+
+    # Extract query features (raw backbone)
+    query_features = []
+    with torch.no_grad():
+        for images in val_loader_query:
+            images = images.to(device)
+            features = backbone(images)  # Raw backbone output
+            features = F.normalize(features, dim=-1)  # L2 normalize
+            query_features.append(features.cpu())
+
+    query_features = torch.cat(query_features, dim=0)
+
+    # Extract gallery features (raw backbone)
+    gallery_features = []
+    with torch.no_grad():
+        for images in val_loader_gallery:
+            images = images.to(device)
+            features = backbone(images)
+            features = F.normalize(features, dim=-1)
+            gallery_features.append(features.cpu())
+
+    gallery_features = torch.cat(gallery_features, dim=0)
+
+    print(f"Query features (backbone): {query_features.shape}")
+    print(f"Gallery features (backbone): {gallery_features.shape}\n")
+
+    # Compute similarity matrix
+    similarity = query_features @ gallery_features.T
+
+    # Get ground truth matches from dataset
+    query_dataset = val_loader_query.dataset
+    gallery_dataset = val_loader_gallery.dataset
+
+    pairs_dict = query_dataset.pairs_dict  # dict: query_name -> list of GT gallery names
+    query_list = query_dataset.images_name
+    gallery_list = gallery_dataset.images_name
+
+    # Create gallery name -> index mapping
+    gallery_idx = {name: idx for idx, name in enumerate(gallery_list)}
+
+    # Compute CMC (Cumulative Matching Characteristics)
+    num_queries = len(query_list)
+    cmc = np.zeros(len(gallery_list))
+
+    for i in range(num_queries):
+        query_name = query_list[i]
+
+        # Get ground truth gallery names for this query
+        if query_name not in pairs_dict:
+            continue
+
+        gt_gallery_names = pairs_dict[query_name]
+
+        # Convert GT names to indices
+        gt_gallery_indices = [gallery_idx[gt_name] for gt_name in gt_gallery_names if gt_name in gallery_idx]
+
+        if len(gt_gallery_indices) == 0:
+            continue
+
+        # Get similarity scores for this query
+        scores = similarity[i].numpy()
+
+        # Sort gallery by similarity (descending)
+        sorted_indices = np.argsort(scores)[::-1]
+
+        # Check if any ground truth is in top-K
+        good_index = np.isin(sorted_indices, gt_gallery_indices)
+
+        # Find first match position
+        match_positions = np.where(good_index == 1)[0]
+        if len(match_positions) > 0:
+            first_match_pos = match_positions[0]
+            cmc[first_match_pos:] += 1
+
+    # Normalize CMC by number of queries
+    cmc = cmc / num_queries
+
+    # Extract Recall@K
+    recall_at_1 = cmc[0] * 100
+    recall_at_5 = cmc[4] * 100 if len(cmc) > 4 else 0
+    recall_at_10 = cmc[9] * 100 if len(cmc) > 9 else 0
+
+    print(f"Recall@1:  {recall_at_1:.2f}%")
+    print(f"Recall@5:  {recall_at_5:.2f}%")
+    print(f"Recall@10: {recall_at_10:.2f}%")
+    print(f"{'='*70}\n")
+
+    return {
+        'r1': recall_at_1,
+        'r5': recall_at_5,
+        'r10': recall_at_10
+    }
+
+
 # -----------------------------------------------------------------------------#
 # 5. Training Loop                                                            #
 # -----------------------------------------------------------------------------#
@@ -723,21 +833,45 @@ def train_ortholoc(args):
     print(f"  Warmup steps: {num_warmup_steps}")
     print(f"  Initial LR: {args.lr:.2e}\n")
 
-    # --- Zero-Shot Validation (NEW) ---
+    # --- ABLATION STUDY: Pure DINOv3 Backbone ---
     print(f"{'='*70}")
-    print(f"ZERO-SHOT EVALUATION (Before Fine-Tuning)")
+    print(f"ABLATION: Pure DINOv3 Backbone (No LoRA, No MLP)")
     print(f"{'='*70}\n")
 
-    zero_shot_metrics = validate_ortholoc(model, val_loader_query, val_loader_gallery, device=args.device)
+    backbone_only = model.model.base_model.model  # Access raw ViT backbone
+    backbone_metrics = validate_ortholoc_backbone_only(
+        backbone_only, val_loader_query, val_loader_gallery, device=args.device
+    )
 
-    print(f"Zero-Shot Performance (GTA weights on Ortholoc):")
-    print(f"  R@1:  {zero_shot_metrics['r1']:.2f}%")
-    print(f"  R@5:  {zero_shot_metrics['r5']:.2f}%")
-    print(f"  R@10: {zero_shot_metrics['r10']:.2f}%")
-    print(f"\nNow starting fine-tuning to improve these numbers...\n")
+    print(f"Pure DINOv3 Backbone Performance:")
+    print(f"  R@1:  {backbone_metrics['r1']:.2f}%")
+    print(f"  R@5:  {backbone_metrics['r5']:.2f}%")
+    print(f"  R@10: {backbone_metrics['r10']:.2f}%\n")
+
+    # --- ABLATION STUDY: GTA-Finetuned Model ---
+    print(f"{'='*70}")
+    print(f"ABLATION: GTA-Finetuned (DINOv3 + LoRA + MLP)")
+    print(f"{'='*70}\n")
+
+    gta_metrics = validate_ortholoc(model, val_loader_query, val_loader_gallery, device=args.device)
+
+    print(f"GTA-Finetuned Performance (current baseline):")
+    print(f"  R@1:  {gta_metrics['r1']:.2f}%")
+    print(f"  R@5:  {gta_metrics['r5']:.2f}%")
+    print(f"  R@10: {gta_metrics['r10']:.2f}%\n")
+
+    # --- ABLATION SUMMARY ---
+    print(f"{'='*70}")
+    print(f"ABLATION SUMMARY")
+    print(f"{'='*70}")
+    print(f"Pure DINOv3:     R@1={backbone_metrics['r1']:5.2f}%  R@5={backbone_metrics['r5']:5.2f}%  R@10={backbone_metrics['r10']:5.2f}%  (no task training)")
+    print(f"GTA-finetuned:   R@1={gta_metrics['r1']:5.2f}%  R@5={gta_metrics['r5']:5.2f}%  R@10={gta_metrics['r10']:5.2f}%  (trained on GTA-UAV)")
+    print(f"Improvement:     R@1=+{gta_metrics['r1'] - backbone_metrics['r1']:4.2f}%  R@5=+{gta_metrics['r5'] - backbone_metrics['r5']:4.2f}%  R@10=+{gta_metrics['r10'] - backbone_metrics['r10']:4.2f}%")
+    print(f"{'='*70}\n")
+    print(f"Now starting fine-tuning on OrthoLoC to improve these numbers...\n")
 
     # --- Training Loop ---
-    best_r1 = zero_shot_metrics['r1']  # Initialize with zero-shot performance
+    best_r1 = gta_metrics['r1']  # Initialize with GTA-finetuned performance
     best_epoch = 0
 
     print(f"{'='*70}")
@@ -818,6 +952,18 @@ def train_ortholoc(args):
     print(f"Weights saved to: {save_path}")
     print(f"  - weights_best.pth (R@1: {best_r1:.2f}%)")
     print(f"  - weights_latest.pth (Epoch {args.epochs})")
+    print(f"{'='*70}\n")
+
+    print(f"{'='*70}")
+    print(f"ABLATION STUDY SUMMARY")
+    print(f"{'='*70}")
+    print(f"Pure DINOv3 backbone:        R@1={backbone_metrics['r1']:5.2f}%  (no task training)")
+    print(f"GTA-finetuned (baseline):    R@1={gta_metrics['r1']:5.2f}%  (trained on GTA-UAV)")
+    print(f"OrthoLoC-finetuned (best):   R@1={best_r1:5.2f}%  (fine-tuned on OrthoLoC)")
+    print(f"")
+    print(f"Improvement from pure DINOv3 to GTA:      +{gta_metrics['r1'] - backbone_metrics['r1']:4.2f}%")
+    print(f"Improvement from GTA to OrthoLoC:         +{best_r1 - gta_metrics['r1']:4.2f}%")
+    print(f"Total improvement from pure DINOv3:       +{best_r1 - backbone_metrics['r1']:4.2f}%")
     print(f"{'='*70}\n")
 
 
