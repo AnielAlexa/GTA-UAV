@@ -59,7 +59,7 @@ from game4loc.loss import WeightedInfoNCE
 # 1. Data Augmentations (FIXED: Now uses albumentations)                      #
 # -----------------------------------------------------------------------------#
 def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225],
-                           augmentation_strength='moderate'):
+                           augmentation_strength='conservative'):
     """
     Create albumentations transforms for Ortholoc dataset.
 
@@ -188,7 +188,7 @@ class DesModelLoRA(nn.Module):
         print(f"Creating backbone: {model_name}")
         self.model = timm.create_model(
             model_name,
-            pretrained=False,  # We'll load GTA weights
+            pretrained=True,  # CRITICAL: Load DINOv3 pretrained weights first!
             num_classes=0,
             img_size=img_size,
             global_pool='avg'
@@ -349,11 +349,83 @@ def load_gta_weights_with_verification(model, checkpoint_path):
 
 
 # -----------------------------------------------------------------------------#
-# 4. Validation Loop (NEW)                                                    #
+# 4. Simple Validation Dataset for Ortholoc (NEW)                             #
+# -----------------------------------------------------------------------------#
+class SimpleValDataset(torch.utils.data.Dataset):
+    """
+    Simple validation dataset that works with both GTA and Ortholoc formats.
+
+    Just loads images without parsing satellite tile coordinates (not needed for Recall@K).
+    """
+    def __init__(self, data_root, pairs_meta_file, view='drone', transforms=None):
+        """
+        Args:
+            data_root: Root directory of dataset
+            pairs_meta_file: JSON file with pairs
+            view: 'drone' or 'satellite'
+            transforms: Albumentations transforms
+        """
+        import json
+
+        self.data_root = data_root
+        self.transforms = transforms
+        self.view = view
+        self.images_path = []
+        self.images_name = []
+        self.pairs_dict = {}  # NEW: Store query→gallery mapping
+
+        # Load JSON
+        json_path = os.path.join(data_root, pairs_meta_file)
+        with open(json_path, 'r') as f:
+            pairs_data = json.load(f)
+
+        if view == 'drone':
+            # Load drone images (queries)
+            for pair in pairs_data:
+                drone_img_dir = pair.get('drone_img_dir', 'drone/images')
+                drone_img_name = pair['drone_img_name']
+                img_path = os.path.join(data_root, drone_img_dir, drone_img_name)
+                self.images_path.append(img_path)
+                self.images_name.append(drone_img_name)
+
+                # Store matching satellite images for this query
+                self.pairs_dict[drone_img_name] = pair['pair_pos_sate_img_list']
+
+        elif view == 'satellite':
+            # Load ALL unique satellite images (gallery)
+            sate_img_set = set()
+            for pair in pairs_data:
+                sate_img_dir = pair.get('sate_img_dir', 'satellite')
+                sate_img_list = pair['pair_pos_sate_img_list']
+                for sate_img_name in sate_img_list:
+                    if sate_img_name not in sate_img_set:
+                        sate_img_set.add(sate_img_name)
+                        img_path = os.path.join(data_root, sate_img_dir, sate_img_name)
+                        self.images_path.append(img_path)
+                        self.images_name.append(sate_img_name)
+
+    def __getitem__(self, index):
+        img_path = self.images_path[index]
+        img = cv2.imread(img_path)
+        if img is None:
+            raise ValueError(f"Failed to load image: {img_path}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        if self.transforms is not None:
+            img = self.transforms(image=img)['image']
+
+        return img
+
+    def __len__(self):
+        return len(self.images_path)
+
+
+# -----------------------------------------------------------------------------#
+# 5. Validation Loop (NEW)                                                    #
 # -----------------------------------------------------------------------------#
 def validate_ortholoc(model, val_loader_query, val_loader_gallery, device='cuda'):
     """
-    Run validation and compute Recall@K metrics.
+    Run validation and compute Recall@K metrics (GTA-UAV style).
 
     Args:
         model: The model to evaluate
@@ -397,19 +469,86 @@ def validate_ortholoc(model, val_loader_query, val_loader_gallery, device='cuda'
     # Compute similarity matrix (query x gallery)
     similarity = query_features @ gallery_features.T  # [num_query, num_gallery]
 
-    # Compute Recall@K
-    # Assumption: query[i] matches gallery[i] (positive pair)
-    num_queries = similarity.shape[0]
+    # DEBUG: Check feature and similarity statistics
+    print(f"\nDEBUG Statistics:")
+    print(f"  Query features - mean: {query_features.mean():.4f}, std: {query_features.std():.4f}")
+    print(f"  Gallery features - mean: {gallery_features.mean():.4f}, std: {gallery_features.std():.4f}")
+    print(f"  Similarity - min: {similarity.min():.4f}, max: {similarity.max():.4f}, mean: {similarity.mean():.4f}")
+    print(f"  Top-1 similarities - mean: {similarity.max(dim=1)[0].mean():.4f}")
 
-    # Get top-K predictions
-    _, topk_indices = torch.topk(similarity, k=10, dim=1, largest=True)  # [num_query, 10]
+    # Get query and gallery names for matching
+    query_dataset = val_loader_query.dataset
+    gallery_dataset = val_loader_gallery.dataset
 
-    # Compute recall
-    ground_truth = torch.arange(num_queries).unsqueeze(1)  # [num_query, 1]
+    query_list = query_dataset.images_name
+    gallery_list = gallery_dataset.images_name
+    pairs_dict = query_dataset.pairs_dict
 
-    recall_at_1 = (topk_indices[:, :1] == ground_truth).any(dim=1).float().mean().item() * 100
-    recall_at_5 = (topk_indices[:, :5] == ground_truth).any(dim=1).float().mean().item() * 100
-    recall_at_10 = (topk_indices[:, :10] == ground_truth).any(dim=1).float().mean().item() * 100
+    print(f"  Num queries: {len(query_list)}")
+    print(f"  Num galleries: {len(gallery_list)}")
+    print(f"  Avg matches per query: {np.mean([len(pairs_dict[q]) for q in query_list]):.1f}")
+
+    # Create gallery name → index mapping
+    gallery_idx = {name: idx for idx, name in enumerate(gallery_list)}
+
+    # Compute Recall@K (GTA-UAV style)
+    num_queries = len(query_list)
+    cmc = np.zeros(len(gallery_list))  # Cumulative Match Characteristic
+
+    # DEBUG: Track matching statistics
+    total_gt_matches = 0
+    queries_with_matches = 0
+    first_match_positions = []
+
+    for i in range(num_queries):
+        query_name = query_list[i]
+
+        # Get ground truth gallery matches for this query
+        gt_gallery_names = pairs_dict[query_name]
+        gt_gallery_indices = []
+        for gt_name in gt_gallery_names:
+            if gt_name in gallery_idx:
+                gt_gallery_indices.append(gallery_idx[gt_name])
+
+        if len(gt_gallery_indices) == 0:
+            print(f"Warning: Query {query_name} has no valid gallery matches")
+            continue
+
+        # DEBUG: Track ground truth matches
+        total_gt_matches += len(gt_gallery_indices)
+        queries_with_matches += 1
+
+        # Get similarity scores for this query
+        scores = similarity[i].numpy()
+
+        # Sort gallery by similarity (descending)
+        sorted_indices = np.argsort(scores)[::-1]
+
+        # Check if any ground truth is in top-K
+        good_index = np.isin(sorted_indices, gt_gallery_indices)
+
+        # Find first match position
+        match_positions = np.where(good_index == 1)[0]
+        if len(match_positions) > 0:
+            first_match_pos = match_positions[0]
+            first_match_positions.append(first_match_pos)
+            cmc[first_match_pos:] += 1  # All ranks >= first match are correct
+
+            # DEBUG: Show first few examples
+            if i < 3:
+                print(f"\n  Query {i} ({query_name}):")
+                print(f"    GT matches: {len(gt_gallery_indices)}")
+                print(f"    First match at rank: {first_match_pos + 1}")
+                print(f"    Top-3 predicted: {[gallery_list[idx] for idx in sorted_indices[:3]]}")
+                print(f"    GT galleries: {gt_gallery_names[:3]}")
+
+    # Normalize CMC by number of queries
+    cmc = cmc / num_queries
+
+    # Extract Recall@K
+    recall_at_1 = cmc[0] * 100
+    recall_at_5 = cmc[4] * 100 if len(cmc) > 4 else 0
+    recall_at_10 = cmc[9] * 100 if len(cmc) > 9 else 0
 
     print(f"Recall@1:  {recall_at_1:.2f}%")
     print(f"Recall@5:  {recall_at_5:.2f}%")
@@ -512,14 +651,12 @@ def train_ortholoc(args):
     # --- Validation Dataset (NEW) ---
     print(f"Loading validation data...")
 
-    # Query loader (drone)
-    val_dataset_query = GTADatasetEval(
+    # Query loader (drone) - Use SimpleValDataset for Ortholoc compatibility
+    val_dataset_query = SimpleValDataset(
         data_root=args.real_data_root,
         pairs_meta_file=args.real_val_json,
         view='drone',
-        transforms=val_transform,
-        mode='pos',
-        query_mode='D2S'
+        transforms=val_transform
     )
 
     val_loader_query = DataLoader(
@@ -530,14 +667,12 @@ def train_ortholoc(args):
         pin_memory=True
     )
 
-    # Gallery loader (satellite)
-    val_dataset_gallery = GTADatasetEval(
+    # Gallery loader (satellite) - Use SimpleValDataset for Ortholoc compatibility
+    val_dataset_gallery = SimpleValDataset(
         data_root=args.real_data_root,
         pairs_meta_file=args.real_val_json,
         view='satellite',
-        transforms=val_transform,
-        mode='pos',
-        query_mode='D2S'
+        transforms=val_transform
     )
 
     val_loader_gallery = DataLoader(
@@ -572,7 +707,7 @@ def train_ortholoc(args):
         weight_decay=args.weight_decay
     )
 
-    loss_function = WeightedInfoNCE(device=args.device, k=args.k)
+    loss_function = WeightedInfoNCE(label_smoothing=args.label_smoothing, device=args.device, k=args.k)
     scaler = GradScaler()
 
     num_training_steps = len(train_loader) * args.epochs
@@ -588,8 +723,21 @@ def train_ortholoc(args):
     print(f"  Warmup steps: {num_warmup_steps}")
     print(f"  Initial LR: {args.lr:.2e}\n")
 
+    # --- Zero-Shot Validation (NEW) ---
+    print(f"{'='*70}")
+    print(f"ZERO-SHOT EVALUATION (Before Fine-Tuning)")
+    print(f"{'='*70}\n")
+
+    zero_shot_metrics = validate_ortholoc(model, val_loader_query, val_loader_gallery, device=args.device)
+
+    print(f"Zero-Shot Performance (GTA weights on Ortholoc):")
+    print(f"  R@1:  {zero_shot_metrics['r1']:.2f}%")
+    print(f"  R@5:  {zero_shot_metrics['r5']:.2f}%")
+    print(f"  R@10: {zero_shot_metrics['r10']:.2f}%")
+    print(f"\nNow starting fine-tuning to improve these numbers...\n")
+
     # --- Training Loop ---
-    best_r1 = 0.0
+    best_r1 = zero_shot_metrics['r1']  # Initialize with zero-shot performance
     best_epoch = 0
 
     print(f"{'='*70}")
@@ -720,6 +868,8 @@ if __name__ == "__main__":
     # Loss & Data
     parser.add_argument('--k', type=float, default=3.0,
                        help='Weight sensitivity for WeightedInfoNCE (3-5 typical)')
+    parser.add_argument('--label_smoothing', type=float, default=0.1,
+                       help='Label smoothing for InfoNCE loss (0.0=none, 0.1=default)')
     parser.add_argument('--train_mode', type=str, default='pos_semipos',
                        choices=['pos', 'pos_semipos'],
                        help='Training mode: pos (IoU=1.0 only) or pos_semipos (mixed IoU)')
@@ -746,6 +896,7 @@ if __name__ == "__main__":
     args.clip_grad = 100.0  # Match GTA training
     args.verbose = False
     args.with_weight = True  # Use weighted InfoNCE
+    args.scheduler = 'cosine'  # Required by trainer.py
 
     # Convert mlp_output_dim=None to actual None (argparse gives string)
     if args.mlp_output_dim == 'None' or args.mlp_output_dim is None:
