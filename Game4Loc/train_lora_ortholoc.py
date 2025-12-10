@@ -37,7 +37,6 @@ import math
 import shutil
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import cv2
 from torch.cuda.amp import GradScaler, autocast
@@ -79,6 +78,12 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
         train_drone_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
 
+            # Light blur for sim-to-real (GTA drone images are sharp)
+            A.OneOf([
+                A.GaussianBlur(blur_limit=(3, 5), sigma_limit=(0.1, 1.0)),
+                A.MotionBlur(blur_limit=3),  # Simulates camera/drone movement
+            ], p=0.1),  # 10% chance for drone
+
             # Color/lighting (slightly less than GTA training)
             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.7),
             A.RandomGamma(gamma_limit=(90, 110), p=0.3),
@@ -94,14 +99,15 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
         train_sat_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
 
-            # Resolution robustness (simulate map quality differences)
+            # Light blur for sim-to-real (GTA images are sharp, real images have natural blur)
             A.OneOf([
-                A.GaussianBlur(blur_limit=(3, 5), sigma_limit=(0.1, 1.0)),
-                A.MotionBlur(blur_limit=3),
-            ], p=0.3),
+                A.GaussianBlur(blur_limit=(3, 7), sigma_limit=(0.1, 1.5)),
+                A.MotionBlur(blur_limit=5),
+                A.MedianBlur(blur_limit=5),  # Simulates sensor noise reduction
+            ], p=0.3),  # 30% chance for satellite
 
-            # Optional JPEG compression
-            A.ImageCompression(quality_lower=85, quality_upper=100, p=0.2),
+            # Optional JPEG compression (real satellite imagery often compressed)
+            A.ImageCompression(quality_lower=80, quality_upper=100, p=0.3),  # Increased from 0.2
 
             A.Normalize(mean=mean, std=std),
             ToTensorV2()
@@ -111,6 +117,14 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
         # Moderate: More augmentation if conservative doesn't adapt well
         train_drone_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
+
+            # Light blur (drone motion + camera shake)
+            A.OneOf([
+                A.GaussianBlur(blur_limit=(3, 7), sigma_limit=(0.2, 1.5)),
+                A.MotionBlur(blur_limit=7),
+                A.MedianBlur(blur_limit=5),
+            ], p=0.1),  # 10% chance for drone
+
             A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1, p=0.8),
             A.RandomGamma(gamma_limit=(80, 120), p=0.4),
             A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=10,
@@ -121,11 +135,15 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
 
         train_sat_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
+
+            # Light blur for satellite imagery
             A.OneOf([
-                A.GaussianBlur(blur_limit=(3, 7), sigma_limit=(0.1, 2.0)),
-                A.MotionBlur(blur_limit=5),
-            ], p=0.5),
-            A.ImageCompression(quality_lower=75, quality_upper=100, p=0.3),
+                A.GaussianBlur(blur_limit=(3, 9), sigma_limit=(0.2, 2.0)),
+                A.MotionBlur(blur_limit=7),
+                A.MedianBlur(blur_limit=7),
+            ], p=0.3),  # 30% chance for satellite
+
+            A.ImageCompression(quality_lower=70, quality_upper=100, p=0.4),  # More aggressive
             A.Normalize(mean=mean, std=std),
             ToTensorV2()
         ])
@@ -134,6 +152,14 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
         # Aggressive: Maximum robustness (use if domain gap is very large)
         train_drone_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
+
+            # Light blur (motion, atmospheric effects)
+            A.OneOf([
+                A.GaussianBlur(blur_limit=(5, 11), sigma_limit=(0.5, 2.5)),
+                A.MotionBlur(blur_limit=9),
+                A.MedianBlur(blur_limit=7),
+            ], p=0.1),  # 10% chance for drone
+
             A.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.15, p=0.9),
             A.RandomGamma(gamma_limit=(70, 130), p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=0.5),
@@ -145,11 +171,15 @@ def get_ortholoc_transforms(img_size=384, mean=[0.485, 0.456, 0.406], std=[0.229
 
         train_sat_transforms = A.Compose([
             A.Resize(img_size, img_size, interpolation=cv2.INTER_CUBIC),
+
+            # Light blur for satellite (atmospheric + sensor limitations)
             A.OneOf([
-                A.GaussianBlur(blur_limit=(3, 9), sigma_limit=(0.1, 2.5)),
-                A.MotionBlur(blur_limit=7),
-            ], p=0.6),
-            A.ImageCompression(quality_lower=70, quality_upper=100, p=0.4),
+                A.GaussianBlur(blur_limit=(5, 11), sigma_limit=(0.5, 3.0)),
+                A.MotionBlur(blur_limit=9),
+                A.MedianBlur(blur_limit=9),
+            ], p=0.3),  # 30% chance for satellite
+
+            A.ImageCompression(quality_lower=60, quality_upper=100, p=0.5),  # Very aggressive
             A.Normalize(mean=mean, std=std),
             ToTensorV2()
         ])
