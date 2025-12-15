@@ -413,21 +413,50 @@ class GTADatasetEval(Dataset):
 
         elif view == 'sate':
             if query_mode == 'D2S':
+                # Build satellite image to location mapping from JSON (for datasets like OrthoLoc)
+                sate_loc_dict = {}
+                for pair in pairs_meta_data:
+                    if f'pair_{mode}_sate_img_list' in pair and f'pair_{mode}_sate_loc_x_y_list' in pair:
+                        for sate_img, loc_xy in zip(pair[f'pair_{mode}_sate_img_list'],
+                                                     pair[f'pair_{mode}_sate_loc_x_y_list']):
+                            sate_loc_dict[sate_img] = loc_xy
+
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
                     self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
 
-                    sate_img_name = sate_img.replace('.png', '')
-                    tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
-                    tile_zoom = int(tile_zoom)
-                    tile_x = int(tile_x)
-                    tile_y = int(tile_y)
-                    offset = int(offset)
-                    loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
+                    # Try GTA format parsing first, fallback to JSON lookup for other formats (e.g., OrthoLoc)
+                    try:
+                        sate_img_name = sate_img.replace('.png', '')
+                        tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
+                        tile_zoom = int(tile_zoom)
+                        tile_x = int(tile_x)
+                        tile_y = int(tile_y)
+                        offset = int(offset)
+                        loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
+                    except (ValueError, AttributeError):
+                        # Non-GTA format (e.g., OrthoLoc: L47_0_R0000_center.png)
+                        # Use coordinates from JSON if available
+                        if sate_img in sate_loc_dict:
+                            loc_center_x, loc_center_y = sate_loc_dict[sate_img]
+                            loc_topleft_x, loc_topleft_y = loc_center_x, loc_center_y
+                        else:
+                            # Fallback to (0, 0) if no location data available
+                            loc_center_x, loc_center_y = 0.0, 0.0
+                            loc_topleft_x, loc_topleft_y = 0.0, 0.0
+
                     self.images_center_loc_xy.append((loc_center_x, loc_center_y))
                     self.images_topleft_loc_xy.append((loc_topleft_x, loc_topleft_y))
             else:
+                # Build satellite image to location mapping from JSON (for datasets like OrthoLoc)
+                sate_loc_dict = {}
+                for pair in pairs_meta_data:
+                    if f'pair_{mode}_sate_img_list' in pair and f'pair_{mode}_sate_loc_x_y_list' in pair:
+                        for sate_img, loc_xy in zip(pair[f'pair_{mode}_sate_img_list'],
+                                                     pair[f'pair_{mode}_sate_loc_x_y_list']):
+                            sate_loc_dict[sate_img] = loc_xy
+
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
                     if sate_img not in pairs_sate2drone_dict.keys():
@@ -435,13 +464,26 @@ class GTADatasetEval(Dataset):
                     self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
 
-                    sate_img_name = sate_img.replace('.png', '')
-                    tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
-                    tile_zoom = int(tile_zoom)
-                    tile_x = int(tile_x)
-                    tile_y = int(tile_y)
-                    offset = int(offset)
-                    loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
+                    # Try GTA format parsing first, fallback to JSON lookup for other formats (e.g., OrthoLoc)
+                    try:
+                        sate_img_name = sate_img.replace('.png', '')
+                        tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
+                        tile_zoom = int(tile_zoom)
+                        tile_x = int(tile_x)
+                        tile_y = int(tile_y)
+                        offset = int(offset)
+                        loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
+                    except (ValueError, AttributeError):
+                        # Non-GTA format (e.g., OrthoLoc: L47_0_R0000_center.png)
+                        # Use coordinates from JSON if available
+                        if sate_img in sate_loc_dict:
+                            loc_center_x, loc_center_y = sate_loc_dict[sate_img]
+                            loc_topleft_x, loc_topleft_y = loc_center_x, loc_center_y
+                        else:
+                            # Fallback to (0, 0) if no location data available
+                            loc_center_x, loc_center_y = 0.0, 0.0
+                            loc_topleft_x, loc_topleft_y = 0.0, 0.0
+
                     self.images_center_loc_xy.append((loc_center_x, loc_center_y))
                     self.images_topleft_loc_xy.append((loc_topleft_x, loc_topleft_y))
 

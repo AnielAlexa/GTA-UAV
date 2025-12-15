@@ -42,13 +42,22 @@ class DesModel(nn.Module):
         if share_weights:
             if "vit" in model_name or "swin" in model_name:
                 # automatically change interpolate pos-encoding to img_size
-                self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size) 
+                # Force average pooling for DINOv3 models
+                if "dinov3" in model_name.lower():
+                    self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size, global_pool='avg')
+                else:
+                    self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size)
             else:
                 self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
         else:
             if "vit" in model_name or "swin" in model_name:
-                self.model1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size)
-                self.model2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size) 
+                # Force average pooling for DINOv3 models
+                if "dinov3" in model_name.lower():
+                    self.model1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size, global_pool='avg')
+                    self.model2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size, global_pool='avg')
+                else:
+                    self.model1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size)
+                    self.model2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size) 
             else:
                 self.model1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
                 self.model2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
