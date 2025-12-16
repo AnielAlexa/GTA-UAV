@@ -511,24 +511,42 @@ def get_transforms(img_size,
                    std=[0.229, 0.224, 0.225],
                    sat_rot=False,
                    altitude_aug_prob=0.5,
-                   altitude_scale_range=(0.25, 0.55)):
+                   altitude_scale_range=(0.25, 0.55),
+                   hard_rotation=True,
+                   sim2real_aug=True):
+    """
+    Get transforms for training and validation.
     
+    Args:
+        img_size: Target image size (height, width)
+        mean: Normalization mean
+        std: Normalization std
+        sat_rot: Whether to apply rotation to satellite images (for cross-area setting)
+        altitude_aug_prob: Probability of altitude augmentation (zoom)
+        altitude_scale_range: Scale range for altitude augmentation
+        hard_rotation: If True, apply full ±180° rotation to drone images. If False, use ±90° (old behavior)
+        sim2real_aug: If True, apply aggressive color jitter for sim-to-real adaptation
+    """
 
+    # Validation transforms (no augmentation)
     val_transforms = A.Compose([A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
                                 A.Normalize(mean, std),
                                 ToTensorV2(),
                                 ])
     
+    # SATELLITE TRANSFORMS (Minimal augmentation, mostly North-Up)
+    # For cross-area: slight rotation (±15°) to handle GPS misalignment
+    # For same-area: no rotation (satellite is always North-Up)
     if sat_rot:
-        p_rot = 1.0
+        sat_rotation = A.Rotate(limit=15, border_mode=cv2.BORDER_REFLECT_101, p=1.0)
     else:
-        p_rot = 0.0
+        sat_rotation = A.NoOp()
                                 
     train_sat_transforms = A.Compose([
                                     RandomCenterCropZoom(scale_limit=altitude_scale_range, p=altitude_aug_prob),
                                     A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
                                     A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
-                                    A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5),
+                                    A.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05, always_apply=False, p=0.3),
                                     A.OneOf([
                                             A.AdvancedBlur(p=1.0),
                                             A.Sharpen(p=1.0),
@@ -543,15 +561,34 @@ def get_transforms(img_size,
                                                             min_width=int(0.1*img_size[0]),
                                                             p=1.0),
                                             ], p=0.3),
-                                    A.RandomRotate90(p=p_rot),
+                                    sat_rotation,  # ±15° for cross-area, NoOp for same-area
                                     A.Normalize(mean, std),
                                     ToTensorV2(),
                                     ])
 
-    train_drone_transforms = A.Compose([RandomCenterCropZoom(scale_limit=altitude_scale_range, p=altitude_aug_prob),
+    # DRONE TRANSFORMS (Hard Rotation + Sim-to-Real Domain Adaptation)
+    # Hard rotation: ±180° (full 360° coverage) to handle arbitrary drone orientations
+    # Sim-to-Real: Aggressive color jitter to bridge GTA-sim to real-world domain gap
+    if hard_rotation:
+        # Hard rotation (±180°) applied BEFORE resize for better quality
+        drone_rotation = A.Rotate(limit=180, border_mode=cv2.BORDER_REFLECT_101, p=1.0)
+    else:
+        # Fallback to 90° increments (old behavior)
+        drone_rotation = A.RandomRotate90(p=1.0)
+    
+    if sim2real_aug:
+        # Moderate aggressive color jitter for sim-to-real adaptation
+        drone_color_jitter = A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.08, always_apply=False, p=0.8)
+    else:
+        # Standard color jitter
+        drone_color_jitter = A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5)
+
+    train_drone_transforms = A.Compose([
+                                        RandomCenterCropZoom(scale_limit=altitude_scale_range, p=altitude_aug_prob),
+                                        drone_rotation,  # HARD ROTATION applied early (before resize)
                                         A.ImageCompression(quality_lower=90, quality_upper=100, p=0.5),
                                         A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
-                                        A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.15, always_apply=False, p=0.5),
+                                        drone_color_jitter,  # SIM-TO-REAL color jitter
                                         A.OneOf([
                                                  A.AdvancedBlur(p=1.0),
                                                  A.Sharpen(p=1.0),
@@ -566,7 +603,6 @@ def get_transforms(img_size,
                                                                  min_width=int(0.1*img_size[0]),
                                                                  p=1.0),
                                               ], p=0.3),
-                                        A.RandomRotate90(p=1.0),
                                         A.Normalize(mean, std),
                                         ToTensorV2(),
                                         ])

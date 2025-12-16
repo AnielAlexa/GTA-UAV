@@ -218,6 +218,8 @@ def parse_args():
 
     parser.add_argument('--model', type=str, default='vit_base_patch16_rope_reg1_gap_256.sbb_in1k', help='Model architecture')
 
+    parser.add_argument('--img_size', type=int, default=384, help='Input image size')
+
     parser.add_argument('--no_share_weights', action='store_true', help='Model not sharing wieghts')
 
     parser.add_argument('--with_match', action='store_true', help='Test with post-process image matching (GIM, etc)')
@@ -231,6 +233,8 @@ def parse_args():
     parser.add_argument('--test_mode', type=str, default='pos', help='Test with positive pairs')
 
     parser.add_argument('--query_mode', type=str, default='D2S', help='Retrieval with drone to satellite')
+
+    parser.add_argument('--sate_img_dir', type=str, default='satellite', help='Satellite/gallery image directory name')
 
     args = parser.parse_args()
     return args
@@ -248,9 +252,11 @@ if __name__ == '__main__':
     config.gpu_ids = args.gpu_ids
     config.checkpoint_start = args.checkpoint_start
     config.model = args.model
+    config.img_size = args.img_size
     config.share_weights = not(args.no_share_weights)
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.with_match = args.with_match
+    config.sate_img_dir = args.sate_img_dir
 
     eval_script(config)

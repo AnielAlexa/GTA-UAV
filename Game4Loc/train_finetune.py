@@ -86,6 +86,10 @@ class Configuration:
     label_smoothing: float = 0.1
     k: float = 3
     
+    # Augmentation for Rotation Invariance and Sim-to-Real Domain Adaptation
+    hard_rotation: bool = True           # Apply ±180° rotation to drone images (instead of ±90°)
+    sim2real_aug: bool = True            # Apply aggressive color jitter for sim-to-real adaptation
+    
     # Learning Rate
     lr: float = 1e-5                     # Lower LR for finetuning
     scheduler: str = "cosine"            # "polynomial" | "cosine" | "constant" | None
@@ -211,7 +215,10 @@ def train_script(config):
     #-----------------------------------------------------------------------------#
     
     # Transforms
-    val_transforms, train_sat_transforms, train_drone_transforms = get_transforms(img_size, mean=mean, std=std)
+    val_transforms, train_sat_transforms, train_drone_transforms = \
+        get_transforms(img_size, mean=mean, std=std, sat_rot=False,
+                      hard_rotation=config.hard_rotation,
+                      sim2real_aug=config.sim2real_aug)
 
     # Train
     train_dataset = GTADatasetTrain(pairs_meta_file=config.train_pairs_meta_file,
