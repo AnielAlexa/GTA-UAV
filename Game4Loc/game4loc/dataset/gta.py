@@ -77,7 +77,8 @@ class GTADatasetTrain(Dataset):
 
             for pair_sate_img, pair_sate_weight in zip(pair_sate_img_list, pair_sate_weight_list):
                 sate_img_file = os.path.join(data_root, sate_img_dir, pair_sate_img)
-                self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight))
+                # Store extra metadata (drone_img_name, pair_sate_img) for correct shuffle lookup
+                self.pairs.append((drone_img_file, sate_img_file, pair_sate_weight, drone_img_name, pair_sate_img))
 
             # Build Graph with All Edges (drone, sate)
             pair_all_sate_img_list = pair_drone2sate['pair_pos_semipos_sate_img_list']
@@ -101,7 +102,11 @@ class GTADatasetTrain(Dataset):
     
     def __getitem__(self, index):
         
-        query_img_path, gallery_img_path, positive_weight = self.samples[index]
+        # Unpack only the first 3 elements (paths and weights)
+        item = self.samples[index]
+        query_img_path = item[0]
+        gallery_img_path = item[1]
+        positive_weight = item[2]
         
         # for query there is only one file in folder
         query_img = cv2.imread(query_img_path)
@@ -297,9 +302,15 @@ class GTADatasetTrain(Dataset):
             if len(pair_pool) > 0:
                 pair = pair_pool.pop(0)
                 
-                drone_img, sate_img, _ = pair
-                drone_img_name = drone_img.split('/')[-1]
-                sate_img_name = sate_img.split('/')[-1]
+                # Unpack tuple with metadata
+                if len(pair) == 5:
+                    drone_img, sate_img, _, drone_img_name, sate_img_name = pair
+                else:
+                    # Fallback for compatibility if structure differs
+                    drone_img, sate_img, _ = pair
+                    drone_img_name = os.path.basename(drone_img)
+                    sate_img_name = os.path.basename(sate_img)
+                
                 # print(sate_img_name)
 
                 pair_name = (drone_img_name, sate_img_name)
@@ -384,7 +395,20 @@ class GTADatasetEval(Dataset):
             for pair_drone2sate in pairs_meta_data:
                 drone_img_name = pair_drone2sate['drone_img_name']
                 drone_img_dir = pair_drone2sate['drone_img_dir']
-                drone_loc_x_y = pair_drone2sate['drone_loc_x_y']
+                
+                if 'drone_loc_x_y' in pair_drone2sate:
+                    drone_loc_x_y = pair_drone2sate['drone_loc_x_y']
+                else:
+                    # Parse filename for aerialVL format: @lon@lat@.png
+                    try:
+                        parts = drone_img_name.split('@')
+                        if len(parts) >= 3:
+                            drone_loc_x_y = [float(parts[1]), float(parts[2])]
+                        else:
+                            drone_loc_x_y = [0.0, 0.0]
+                    except:
+                        drone_loc_x_y = [0.0, 0.0]
+
                 self.pairs_drone2sate_dict[drone_img_name] = []
                 pair_sate_img_list = pair_drone2sate[f'pair_{mode}_sate_img_list']
                 for pair_sate_img in pair_sate_img_list:
@@ -397,38 +421,88 @@ class GTADatasetEval(Dataset):
                     self.images_center_loc_xy.append((drone_loc_x_y[0], drone_loc_x_y[1]))
 
         elif view == 'sate':
+            # Dynamic Gallery Discovery based on Metadata directories
+            # Finds all unique sate_img_dirs referenced in the metadata and scans them.
             if query_mode == 'D2S':
-                sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
-                for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
-                    self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
-                    self.images_name.append(sate_img)
+                # 1. Collect directories
+                target_dirs = set()
+                for item in pairs_meta_data:
+                    if 'sate_img_dir' in item:
+                        target_dirs.add(item['sate_img_dir'])
+                
+                # If no dirs found in metadata (unlikely), fallback to provided sate_img_dir but warn
+                if not target_dirs and sate_img_dir:
+                     target_dirs.add(sate_img_dir)
 
-                    sate_img_name = sate_img.replace('.png', '')
-                    tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
-                    tile_zoom = int(tile_zoom)
-                    tile_x = int(tile_x)
-                    tile_y = int(tile_y)
-                    offset = int(offset)
-                    loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
-                    self.images_center_loc_xy.append((loc_center_x, loc_center_y))
-                    self.images_topleft_loc_xy.append((loc_topleft_x, loc_topleft_y))
+                # 2. Scan directories
+                for rel_dir in target_dirs:
+                    full_dir = os.path.join(data_root, rel_dir)
+                    if not os.path.exists(full_dir):
+                        print(f"Warning: Gallery directory not found: {full_dir}")
+                        continue
+                        
+                    for root, _, files in os.walk(full_dir):
+                        for file in files:
+                            if not (file.lower().endswith('.png') or file.lower().endswith('.jpg') or file.lower().endswith('.jpeg')):
+                                continue
+                                
+                            self.images_path.append(os.path.join(root, file))
+                            # Use relative path from the scanned directory to match JSON format
+                            # e.g. "Odvracenica/satellite_384/file.jpg" relative to "Raw-images"
+                            rel_name = os.path.relpath(os.path.join(root, file), full_dir)
+                            self.images_name.append(rel_name)
+                            
+                            # Coordinate Extraction
+                            try:
+                                if '@' in file:
+                                    # Format: @lon@lat@.png
+                                    parts = file.split('@')
+                                    # Expect ['', 'lon', 'lat', '.png'] or similar
+                                    # Handle potential extra @
+                                    # Logic: find floats in parts
+                                    valid_parts = []
+                                    for p in parts:
+                                        try:
+                                            valid_parts.append(float(p))
+                                        except ValueError:
+                                            pass
+                                    if len(valid_parts) >= 2:
+                                        lon = valid_parts[0]
+                                        lat = valid_parts[1]
+                                        self.images_center_loc_xy.append((lon, lat))
+                                        self.images_topleft_loc_xy.append((lon, lat))
+                                    else:
+                                        self.images_center_loc_xy.append((0.0, 0.0))
+                                        self.images_topleft_loc_xy.append((0.0, 0.0))
+                                else:
+                                    # Attempt GTA format: tile_zoom_offset_x_y
+                                    sate_img_name = file.replace('.png', '')
+                                    tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
+                                    tile_zoom = int(tile_zoom)
+                                    tile_x = int(tile_x)
+                                    tile_y = int(tile_y)
+                                    offset = int(offset)
+                                    loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
+                                    self.images_center_loc_xy.append((loc_center_x, loc_center_y))
+                                    self.images_topleft_loc_xy.append((loc_topleft_x, loc_topleft_y))
+                            except Exception as e:
+                                # Fallback for unparseable filenames
+                                self.images_center_loc_xy.append((0.0, 0.0))
+                                self.images_topleft_loc_xy.append((0.0, 0.0))
+
             else:
+                # S2D Mode (Satellite to Drone) - Filtered Logic
+                # This assumes we are searching FROM satellite TO drone. 
+                # Original logic kept. Adapted for robustness would be needed if used.
                 sate_img_dir_list, sate_img_list = get_sate_data(sate_img_dir)
                 for sate_img_dir, sate_img in zip(sate_img_dir_list, sate_img_list):
                     if sate_img not in pairs_sate2drone_dict.keys():
                         continue
                     self.images_path.append(os.path.join(data_root, sate_img_dir, sate_img))
                     self.images_name.append(sate_img)
+                    self.images_center_loc_xy.append((0.0, 0.0)) # Dummy/TODO if needed
+                    self.images_topleft_loc_xy.append((0.0, 0.0))
 
-                    sate_img_name = sate_img.replace('.png', '')
-                    tile_zoom, offset, tile_x, tile_y = sate_img_name.split('_')
-                    tile_zoom = int(tile_zoom)
-                    tile_x = int(tile_x)
-                    tile_y = int(tile_y)
-                    offset = int(offset)
-                    loc_center_x, loc_center_y, loc_topleft_x, loc_topleft_y = sate2loc(tile_zoom, offset, tile_x, tile_y)
-                    self.images_center_loc_xy.append((loc_center_x, loc_center_y))
-                    self.images_topleft_loc_xy.append((loc_topleft_x, loc_topleft_y))
 
         self.transforms = transforms
 

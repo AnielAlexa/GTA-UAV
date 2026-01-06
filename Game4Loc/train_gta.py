@@ -17,6 +17,7 @@ from game4loc.evaluate.gta import evaluate
 from game4loc.loss import InfoNCE, WeightedInfoNCE, GroupInfoNCE, TripletLoss
 from game4loc.models.model import DesModel
 from game4loc.models.model_netvlad import DesModelWithVLAD
+from game4loc.models.model_dinov3_boq import DesModelDINOv3BoQ
 
 
 def parse_tuple(s):
@@ -33,7 +34,15 @@ class Configuration:
     model: str = 'convnext_base.fb_in22k_ft_in1k_384'
     model_hub: str = 'timm'
     with_netvlad: bool = False
+    with_dinov3_boq: bool = False
     
+    # BoQ parameters
+    num_queries: int = 64
+    boq_nheads: int = 8
+    gem_p: float = 3.0
+    mlp_hidden_dim: int = 1024
+    mlp_output_dim: int = 512
+
     # Override model image size
     img_size: int = 384
  
@@ -168,6 +177,16 @@ def train_script(config):
                     pretrained=True,
                     img_size=config.img_size,
                     share_weights=config.share_weights)
+    elif config.with_dinov3_boq:
+        model = DesModelDINOv3BoQ(model_name=config.model,
+                                  pretrained=True,
+                                  img_size=config.img_size,
+                                  share_weights=config.share_weights,
+                                  num_queries=config.num_queries,
+                                  boq_nheads=config.boq_nheads,
+                                  gem_p=config.gem_p,
+                                  mlp_hidden_dim=config.mlp_hidden_dim,
+                                  mlp_output_dim=config.mlp_output_dim)
     else:
         model = DesModel(model_name=config.model, 
                         pretrained=True,
@@ -500,10 +519,21 @@ def parse_args():
     parser.add_argument('--with_weight', action='store_true', help='Train with weight')
 
     parser.add_argument('--k', type=float, default=5, help='weighted k')
+    
+    # New arguments for DINOv3 BoQ
+    parser.add_argument('--with_dinov3_boq', action='store_true', help='Use DINOv3 BoQ Model')
+    parser.add_argument('--num_queries', type=int, default=64, help='Number of BoQ queries')
+    parser.add_argument('--boq_nheads', type=int, default=8, help='Number of heads in BoQ attention')
+    parser.add_argument('--gem_p', type=float, default=3.0, help='GeM pooling parameter')
+    parser.add_argument('--mlp_hidden_dim', type=int, default=1024, help='MLP hidden dimension')
+    parser.add_argument('--mlp_output_dim', type=int, default=512, help='MLP output dimension')
 
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
+    
+    # Image size override
+    parser.add_argument('--img_size', type=int, default=384, help='Input image size')
 
     args = parser.parse_args()
     return args
@@ -514,12 +544,22 @@ if __name__ == '__main__':
 
     config = Configuration()
     config.data_root = args.data_root
+    config.img_size = args.img_size  # Update img_size in config
     config.train_pairs_meta_file = args.train_pairs_meta_file
     config.test_pairs_meta_file = args.test_pairs_meta_file
     config.log_to_file = args.log_to_file
     config.log_path = args.log_path
     config.epochs = args.epochs
     config.batch_size = args.batch_size
+    
+    # DINOv3 BoQ args
+    config.with_dinov3_boq = args.with_dinov3_boq
+    config.num_queries = args.num_queries
+    config.boq_nheads = args.boq_nheads
+    config.gem_p = args.gem_p
+    config.mlp_hidden_dim = args.mlp_hidden_dim
+    config.mlp_output_dim = args.mlp_output_dim
+    
     config.train_in_group = args.train_in_group
     config.train_with_recon = args.train_with_recon
     config.recon_weight = args.recon_weight
