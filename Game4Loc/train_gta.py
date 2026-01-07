@@ -186,7 +186,11 @@ def train_script(config):
                                   boq_nheads=config.boq_nheads,
                                   gem_p=config.gem_p,
                                   mlp_hidden_dim=config.mlp_hidden_dim,
-                                  mlp_output_dim=config.mlp_output_dim)
+                                  mlp_output_dim=config.mlp_output_dim,
+                                  use_lora=config.use_lora,
+                                  lora_r=config.lora_r,
+                                  lora_alpha=config.lora_alpha,
+                                  lora_dropout=config.lora_dropout)
     else:
         model = DesModel(model_name=config.model, 
                         pretrained=True,
@@ -528,6 +532,12 @@ def parse_args():
     parser.add_argument('--mlp_hidden_dim', type=int, default=1024, help='MLP hidden dimension')
     parser.add_argument('--mlp_output_dim', type=int, default=512, help='MLP output dimension')
 
+    # LoRA arguments
+    parser.add_argument('--use_lora', action='store_true', help='Use LoRA adaptation for backbone')
+    parser.add_argument('--lora_r', type=int, default=16, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
+
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
@@ -560,6 +570,12 @@ if __name__ == '__main__':
     config.mlp_hidden_dim = args.mlp_hidden_dim
     config.mlp_output_dim = args.mlp_output_dim
     
+    # LoRA config
+    config.use_lora = args.use_lora
+    config.lora_r = args.lora_r
+    config.lora_alpha = args.lora_alpha
+    config.lora_dropout = args.lora_dropout
+
     config.train_in_group = args.train_in_group
     config.train_with_recon = args.train_with_recon
     config.recon_weight = args.recon_weight

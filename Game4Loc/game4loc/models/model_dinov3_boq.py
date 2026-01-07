@@ -4,6 +4,12 @@ import torch.nn.functional as F
 import timm
 import numpy as np
 
+try:
+    from peft import get_peft_model, LoraConfig, TaskType
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 class GeM(nn.Module):
     """
     Generalized Mean Pooling
@@ -103,11 +109,16 @@ class DesModelDINOv3BoQ(nn.Module):
                  boq_nheads=8,
                  gem_p=3.0,
                  mlp_hidden_dim=1024,
-                 mlp_output_dim=512):
+                 mlp_output_dim=512,
+                 use_lora=False,
+                 lora_r=16,
+                 lora_alpha=16,
+                 lora_dropout=0.1):
                  
         super(DesModelDINOv3BoQ, self).__init__()
         self.share_weights = share_weights
         self.img_size = img_size
+        self.use_lora = use_lora
         
         print(f"Initializing DINOv3 BoQ Model: {model_name}")
         
@@ -115,11 +126,35 @@ class DesModelDINOv3BoQ(nn.Module):
         # Create model but removing the head typically isn't enough as we need patches
         # We will use forward_features() method of timm models
         self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size)
+    
+        # Apply LoRA if requested
+        if self.use_lora:
+            if not PEFT_AVAILABLE:
+                raise ImportError("PEFT library is required for LoRA. Please install it with 'pip install peft'")
+            
+            print(f"Applying LoRA to backbone (r={lora_r}, alpha={lora_alpha})...")
+            # Target modules for ViT usually include qkv/proj
+            peft_config = LoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=["qkv", "proj", "fc1", "fc2"], # Target Attention and MLP
+                lora_dropout=lora_dropout,
+                bias="none",
+                modules_to_save=[],
+            )
+            self.backbone = get_peft_model(self.backbone, peft_config)
+            self.backbone.print_trainable_parameters()
         
         # Determine feature dimension
         with torch.no_grad():
             dummy = torch.randn(1, 3, img_size, img_size)
-            features = self.backbone.forward_features(dummy)
+            if self.use_lora:
+                 # Attempt to access base model feature extraction if wrapped
+                 # Generally backbone(dummy) will work through PEFT's forward, producing features if num_classes=0
+                 features = self.backbone.base_model.model.forward_features(dummy)
+            else:
+                features = self.backbone.forward_features(dummy)
+
             # features shape: [B, N, D] (N = patches + 1 cls)
             if isinstance(features, tuple): # Some models return tuple
                  features = features[0]
@@ -127,13 +162,13 @@ class DesModelDINOv3BoQ(nn.Module):
             print(f"Backbone feature dimension: {self.feat_dim}")
             print(f"Backbone token count (Including CLS): {features.shape[1]}")
 
-        # 2. Aggregation (BoQ + GeM)
+        # 2. Aggregation (BoQ + Flattening)
         self.boq = BagOfQueries(dim=self.feat_dim, num_queries=num_queries, num_heads=boq_nheads)
-        self.gem = GeM(p=gem_p)
+        self.gem = GeM(p=gem_p) 
         
         # 3. Head (MLP)
-        # Input to MLP is CLS token (feat_dim) + BoQ pooled (feat_dim)
-        input_dim_mlp = self.feat_dim * 2
+        # Input to MLP is flattened BoQ features (num_queries * feat_dim) + CLS Token (feat_dim)
+        input_dim_mlp = (num_queries * self.feat_dim) + self.feat_dim
         # Increased dropout to 0.2 for regularization on small dataset
         self.mlp = MLPHeader(input_dim=input_dim_mlp, hidden_dim=mlp_hidden_dim, output_dim=mlp_output_dim, dropout=0.2)
         
@@ -143,6 +178,9 @@ class DesModelDINOv3BoQ(nn.Module):
         # Handle non-shared weights case
         if not share_weights:
             self.backbone2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0, img_size=img_size)
+            if self.use_lora:
+                 self.backbone2 = get_peft_model(self.backbone2, peft_config)
+            
             # Note: For simplicity in this advanced arch, we usually assume the Aggregation/Head are shared 
             # even if backbones aren't, but let's strictly follow the flag for backbone.
             # However, typically people share the BoQ/MLP.
@@ -151,12 +189,21 @@ class DesModelDINOv3BoQ(nn.Module):
             pass
 
     def get_config(self):
+        if self.use_lora:
+            return timm.data.resolve_model_data_config(self.backbone.base_model.model)
         return timm.data.resolve_model_data_config(self.backbone)
 
     def set_grad_checkpointing(self, enable=True):
-        self.backbone.set_grad_checkpointing(enable)
+        if self.use_lora:
+             self.backbone.base_model.model.set_grad_checkpointing(enable)
+        else:
+            self.backbone.set_grad_checkpointing(enable)
+            
         if not self.share_weights and hasattr(self, 'backbone2'):
-            self.backbone2.set_grad_checkpointing(enable)
+            if self.use_lora:
+                self.backbone2.base_model.model.set_grad_checkpointing(enable)
+            else:
+                self.backbone2.set_grad_checkpointing(enable)
 
     def freeze_layers(self, frozen_stages=[0,0,0,0]):
         # DINOv3 (ViT) doesn't have "stages" in the same way as ConvNets.
@@ -164,6 +211,11 @@ class DesModelDINOv3BoQ(nn.Module):
         # Since this method is only called if config.freeze_layers is True,
         # we will freeze the backbone regardless of the frozen_stages values.
         
+        if self.use_lora:
+            print("LoRA enabled: Skipping explicit backbone freezing (PEFT handles base model freezing automatically).")
+            # We must NOT loop through parameters setting requires_grad=False because that would freeze the LoRA adapters too!
+            return
+
         print("Freezing Backbone parameters...")
         for param in self.backbone.parameters():
             param.requires_grad = False
@@ -175,12 +227,20 @@ class DesModelDINOv3BoQ(nn.Module):
     def _forward_single(self, x, backbone):
         # 1. Extract Features
         # Output: [B, N, D]
-        all_tokens = backbone.forward_features(x)
+        if self.use_lora:
+            all_tokens = backbone.base_model.model.forward_features(x)
+        else:
+            all_tokens = backbone.forward_features(x)
         
         # 2. Split CLS and Patches
         # For DINOv3 (and v2 with registers), we must handle prefix tokens correctly.
-        # num_prefix_tokens = 1 (CLS) + 4 (Registers) = 5
-        num_prefix = backbone.num_prefix_tokens if hasattr(backbone, 'num_prefix_tokens') else 1
+        # Handle PEFT wrapper if necessary
+        if hasattr(backbone, 'num_prefix_tokens'):
+            num_prefix = backbone.num_prefix_tokens
+        elif hasattr(backbone, 'base_model') and hasattr(backbone.base_model.model, 'num_prefix_tokens'):
+            num_prefix = backbone.base_model.model.num_prefix_tokens
+        else:
+            num_prefix = 1
         
         # CLS is always at 0
         cls_token = all_tokens[:, 0, :]   # [B, D]
@@ -192,12 +252,12 @@ class DesModelDINOv3BoQ(nn.Module):
         # [B, num_queries, D]
         boq_features = self.boq(patch_tokens)
         
-        # 4. GeM Pooling
-        # [B, D]
-        pooled_features = self.gem(boq_features)
+        # 4. Flattening (Replacing GeM Pooling)
+        # [B, num_queries, D] -> [B, num_queries * D]
+        boq_flat = boq_features.flatten(1)
         
-        # 5. Concatenate
-        combined = torch.cat([cls_token, pooled_features], dim=1) # [B, 2*D]
+        # 5. Concatenate CLS + BoQ Flat
+        combined = torch.cat([cls_token, boq_flat], dim=1) # [B, D + num_queries*D]
         
         # 6. MLP Projection
         embedding = self.mlp(combined) # [B, out_dim]
