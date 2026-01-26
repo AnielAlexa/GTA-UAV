@@ -526,13 +526,22 @@ class GTADatasetEval(Dataset):
 def get_transforms(img_size,
                    mean=[0.485, 0.456, 0.406],
                    std=[0.229, 0.224, 0.225],
-                   sat_rot=False):
+                   sat_rot=False,
+                   grayscale=False):
     
+    transforms_list = [
+        A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0)
+    ]
+    
+    if grayscale:
+        transforms_list.append(A.ToGray(p=1.0))
+        
+    transforms_list.extend([
+        A.Normalize(mean, std),
+        ToTensorV2()
+    ])
 
-    val_transforms = A.Compose([A.Resize(img_size[0], img_size[1], interpolation=cv2.INTER_LINEAR_EXACT, p=1.0),
-                                A.Normalize(mean, std),
-                                ToTensorV2(),
-                                ])
+    val_transforms = A.Compose(transforms_list)
     
     if sat_rot:
         p_rot = 1.0

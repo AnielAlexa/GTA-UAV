@@ -19,7 +19,6 @@ from game4loc.models.model import DesModel
 from game4loc.models.model_netvlad import DesModelWithVLAD
 from game4loc.models.model_dinov3_boq import DesModelDINOv3BoQ
 from game4loc.models.model_convnext_boq import DesModelConvNextBoQ
-from game4loc.models.model_matchanything_boq import DesModelMatchAnythingBoQ
 
 
 def parse_tuple(s):
@@ -33,27 +32,24 @@ def parse_tuple(s):
 class Configuration:
     
     # Model
-    model: str = 'convnext_base.fb_in22k_ft_in1k_384'
+    model: str = 'convnext_tiny.dinov3_lvd1689m'
     model_hub: str = 'timm'
     with_netvlad: bool = False
     with_dinov3_boq: bool = False
-    with_matchanything_boq: bool = False
-
+    with_convnext_boq: bool = True
+    
     # BoQ parameters
     num_queries: int = 64
     boq_nheads: int = 8
     gem_p: float = 3.0
     mlp_hidden_dim: int = 1024
     mlp_output_dim: int = 512
-    unfreeze_n_blocks: int = 2
 
-    # MatchAnything parameters
-    matchanything_ckpt: str = '/media/aniel/storage/dataset_to_analize/MatchAnything/matchanything_eloftr.ckpt'
-
-    # Intermediate layer extraction (AnyLoc-style)
-    use_intermediate_layer: bool = False
-    intermediate_layer_idx: int = 10
-    intermediate_facet: str = 'value'
+    # LoRA parameters
+    use_lora: bool = True
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
 
     # Override model image size
     img_size: int = 384
@@ -93,7 +89,7 @@ class Configuration:
     train_ratio: float = 1.0
 
     # Eval
-    batch_size_eval: int = 32
+    batch_size_eval: int = 128
     eval_every_n_epoch: int = 1          # eval every n Epoch
     normalize_features: bool = True
     eval_gallery_n: int = -1             # -1 for all or int
@@ -185,33 +181,12 @@ def train_script(config):
     print("\nModel: {}".format(config.model))
 
     if config.with_netvlad:
-        model = DesModelWithVLAD(model_name=config.model,
+        model = DesModelWithVLAD(model_name=config.model, 
                     pretrained=True,
                     img_size=config.img_size,
                     share_weights=config.share_weights)
-    elif config.with_matchanything_boq:
-        model = DesModelMatchAnythingBoQ(
-                                  checkpoint_path=config.matchanything_ckpt,
-                                  img_size=config.img_size,
-                                  share_weights=config.share_weights,
-                                  num_queries=config.num_queries,
-                                  num_layers=2,
-                                  mlp_output_dim=config.mlp_output_dim)
     elif config.with_dinov3_boq:
-        if "convnext" in config.model:
-             model = DesModelConvNextBoQ(model_name=config.model,
-                                  pretrained=True,
-                                  img_size=config.img_size,
-                                  share_weights=config.share_weights,
-                                  num_queries=config.num_queries,
-                                  mlp_output_dim=config.mlp_output_dim,
-                                  unfreeze_n_blocks=config.unfreeze_n_blocks,
-                                  use_lora=config.use_lora,
-                                  lora_r=config.lora_r,
-                                  lora_alpha=config.lora_alpha,
-                                  lora_dropout=config.lora_dropout)
-        else:
-            model = DesModelDINOv3BoQ(model_name=config.model,
+        model = DesModelDINOv3BoQ(model_name=config.model,
                                   pretrained=True,
                                   img_size=config.img_size,
                                   share_weights=config.share_weights,
@@ -220,16 +195,23 @@ def train_script(config):
                                   gem_p=config.gem_p,
                                   mlp_hidden_dim=config.mlp_hidden_dim,
                                   mlp_output_dim=config.mlp_output_dim,
-                                  unfreeze_n_blocks=config.unfreeze_n_blocks,
                                   use_lora=config.use_lora,
                                   lora_r=config.lora_r,
                                   lora_alpha=config.lora_alpha,
-                                  lora_dropout=config.lora_dropout,
-                                  use_intermediate_layer=config.use_intermediate_layer,
-                                  intermediate_layer_idx=config.intermediate_layer_idx,
-                                  intermediate_facet=config.intermediate_facet)
+                                  lora_dropout=config.lora_dropout)
+    elif config.with_convnext_boq:
+        model = DesModelConvNextBoQ(model_name=config.model,
+                                  pretrained=True,
+                                  img_size=config.img_size,
+                                  share_weights=config.share_weights,
+                                  num_queries=config.num_queries,
+                                  mlp_output_dim=config.mlp_output_dim,
+                                  use_lora=config.use_lora,
+                                  lora_r=config.lora_r,
+                                  lora_alpha=config.lora_alpha,
+                                  lora_dropout=config.lora_dropout)
     else:
-        model = DesModel(model_name=config.model,
+        model = DesModel(model_name=config.model, 
                         pretrained=True,
                         img_size=config.img_size,
                         share_weights=config.share_weights)
@@ -519,7 +501,7 @@ def parse_args():
    
     parser.add_argument('--test_pairs_meta_file', type=str, default='cross-area-drone2sate-test.json', help='Test metafile path')
 
-    parser.add_argument('--model', type=str, default='vit_base_patch16_rope_reg1_gap_256.sbb_in1k', help='Model architecture')
+    parser.add_argument('--model', type=str, default='convnext_tiny.dinov3_lvd1689m', help='Model architecture')
 
     parser.add_argument('--no_share_weights', action='store_true', help='Train without sharing wieghts')
 
@@ -534,6 +516,8 @@ def parse_args():
     parser.add_argument('--gpu_ids', type=parse_tuple, default=(0,1), help='GPU ID')
 
     parser.add_argument('--batch_size', type=int, default=40, help='Batch size')
+
+    parser.add_argument('--batch_size_eval', type=int, default=16, help='Eval batch size')
 
     parser.add_argument('--checkpoint_start', type=str, default=None, help='Training from checkpoint')
 
@@ -563,7 +547,7 @@ def parse_args():
     
     # New arguments for DINOv3 BoQ
     parser.add_argument('--with_dinov3_boq', action='store_true', help='Use DINOv3 BoQ Model')
-    parser.add_argument('--unfreeze_n_blocks', type=int, default=2, help='Number of blocks to unfreeze in DINOv3 backbone')
+    parser.add_argument('--with_convnext_boq', action='store_true', default=True, help='Use ConvNeXt BoQ Model')
     parser.add_argument('--num_queries', type=int, default=64, help='Number of BoQ queries')
     parser.add_argument('--boq_nheads', type=int, default=8, help='Number of heads in BoQ attention')
     parser.add_argument('--gem_p', type=float, default=3.0, help='GeM pooling parameter')
@@ -575,19 +559,6 @@ def parse_args():
     parser.add_argument('--lora_r', type=int, default=16, help='LoRA rank')
     parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha')
     parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
-
-    # Intermediate layer extraction arguments (AnyLoc-style)
-    parser.add_argument('--use_intermediate_layer', action='store_true',
-                        help='Extract features from intermediate ViT layer (AnyLoc-style)')
-    parser.add_argument('--intermediate_layer_idx', type=int, default=10,
-                        help='Which layer to extract features from (0-indexed, default 10 for 12-layer ViT)')
-    parser.add_argument('--intermediate_facet', type=str, default='value',
-                        choices=['key', 'query', 'value', 'token'],
-                        help='Which attention facet to extract (default: value)')
-
-    # New arguments for MatchAnything BoQ
-    parser.add_argument('--with_matchanything_boq', action='store_true', help='Use MatchAnything ResNet+FPN BoQ Model')
-    parser.add_argument('--matchanything_ckpt', type=str, default='/media/aniel/storage/dataset_to_analize/MatchAnything/matchanything_eloftr.ckpt', help='Path to MatchAnything checkpoint')
 
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
@@ -612,30 +583,22 @@ if __name__ == '__main__':
     config.log_path = args.log_path
     config.epochs = args.epochs
     config.batch_size = args.batch_size
+    config.batch_size_eval = args.batch_size_eval
     
     # DINOv3 BoQ args
     config.with_dinov3_boq = args.with_dinov3_boq
-    config.unfreeze_n_blocks = args.unfreeze_n_blocks
+    config.with_convnext_boq = args.with_convnext_boq
     config.num_queries = args.num_queries
     config.boq_nheads = args.boq_nheads
     config.gem_p = args.gem_p
     config.mlp_hidden_dim = args.mlp_hidden_dim
     config.mlp_output_dim = args.mlp_output_dim
-
+    
     # LoRA config
     config.use_lora = args.use_lora
     config.lora_r = args.lora_r
     config.lora_alpha = args.lora_alpha
     config.lora_dropout = args.lora_dropout
-
-    # Intermediate layer extraction config (AnyLoc-style)
-    config.use_intermediate_layer = args.use_intermediate_layer
-    config.intermediate_layer_idx = args.intermediate_layer_idx
-    config.intermediate_facet = args.intermediate_facet
-
-    # MatchAnything BoQ args
-    config.with_matchanything_boq = args.with_matchanything_boq
-    config.matchanything_ckpt = args.matchanything_ckpt
 
     config.train_in_group = args.train_in_group
     config.train_with_recon = args.train_with_recon
