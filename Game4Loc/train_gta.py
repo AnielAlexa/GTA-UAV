@@ -115,7 +115,8 @@ class Configuration:
 
     # Augment Images
     prob_flip: float = 0.5               # flipping the sat image and drone image simultaneously
-    
+    prob_grayscale: float = 0.0          # probability of synchronized grayscale augmentation
+
     # Savepath for model checkpoints
     model_path: str = "./work_dir/gta"
 
@@ -289,6 +290,7 @@ def train_script(config):
                                     transforms_gallery=train_sat_transforms,
                                     group_len=config.group_len,
                                     prob_flip=config.prob_flip,
+                                    prob_grayscale=config.prob_grayscale,
                                     shuffle_batch_size=config.batch_size,
                                     mode=config.train_mode,
                                     train_ratio=config.train_ratio,
@@ -592,7 +594,9 @@ def parse_args():
     parser.add_argument('--no_custom_sampling', action='store_true', help='Train without custom sampling')
     
     parser.add_argument('--train_ratio', type=float, default=1.0, help='Train on ratio of data')
-    
+
+    parser.add_argument('--prob_grayscale', type=float, default=0.0, help='Probability of synchronized grayscale augmentation (0.0-1.0)')
+
     # Image size override
     parser.add_argument('--img_size', type=int, default=384, help='Input image size')
 
@@ -658,5 +662,6 @@ if __name__ == '__main__':
     config.test_mode = args.test_mode
     config.query_mode = args.query_mode
     config.train_ratio = args.train_ratio
+    config.prob_grayscale = args.prob_grayscale
 
     train_script(config)

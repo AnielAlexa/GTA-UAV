@@ -49,6 +49,7 @@ class GTADatasetTrain(Dataset):
                  transforms_query=None,
                  transforms_gallery=None,
                  prob_flip=0.5,
+                 prob_grayscale=0.0,
                  shuffle_batch_size=128,
                  mode='pos_semipos',
                  train_ratio=1.0,
@@ -90,6 +91,7 @@ class GTADatasetTrain(Dataset):
         self.transforms_query = transforms_query
         self.transforms_gallery = transforms_gallery
         self.prob_flip = prob_flip
+        self.prob_grayscale = prob_grayscale
         self.shuffle_batch_size = shuffle_batch_size
 
         # Training with sparse data
@@ -117,8 +119,13 @@ class GTADatasetTrain(Dataset):
         
         if np.random.random() < self.prob_flip:
             query_img = cv2.flip(query_img, 1)
-            gallery_img = cv2.flip(gallery_img, 1) 
-        
+            gallery_img = cv2.flip(gallery_img, 1)
+
+        # Synchronized grayscale augmentation
+        if np.random.random() < self.prob_grayscale:
+            query_img = cv2.cvtColor(cv2.cvtColor(query_img, cv2.COLOR_RGB2GRAY), cv2.COLOR_GRAY2RGB)
+            gallery_img = cv2.cvtColor(cv2.cvtColor(gallery_img, cv2.COLOR_RGB2GRAY), cv2.COLOR_GRAY2RGB)
+
         # image transforms
         if self.transforms_query is not None:
             query_img = self.transforms_query(image=query_img)['image']

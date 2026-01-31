@@ -27,7 +27,7 @@ class Configuration:
     model: str = 'vit_base_patch16_rope_reg1_gap_256.sbb_in1k'
     
     # Override model image size
-    img_size: int = 384
+    img_size: int = 256
     
     # Evaluation
     batch_size: int = 128
